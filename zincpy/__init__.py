@@ -1,7 +1,7 @@
 """A python interface for ZINC database"""
 
 # Add imports here
-from .zincpy import *
+from .zinc_client import *
 
 # Handle versioneer
 from ._version import get_versions
