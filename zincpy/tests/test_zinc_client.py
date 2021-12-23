@@ -46,21 +46,162 @@ def test_append_filters_to_url():
     full_url = client._append_filters_to_url(substances_url, "smi", count=1000)
     assert full_url == "https://zinc.docking.org/substances.smi?count=1000"
     
-    full_url = client._append_filters_to_url(catalog_url, "smi", count=1000, availability="for-sale", reactivity="anodyne")
+    full_url = client._append_filters_to_url(substances_url, "smi", count=1000, availability="for-sale", reactivity="anodyne")
     assert full_url == "https://zinc.docking.org/substances/subsets/for-sale+anodyne.smi?count=1000"
     
 
-def test_catalog_url():
-    pass
+def test_get_catalog_url():
+    
+    client = ZincClient()
+    file_name = "./temp.smi"
+    
+    # First we test for errors
+    catalog_name = "hello"
+    with pytest.raises(exc.InvalidCatalogError, match="is not a valid catalog name"):
+        client._get_catalog_url(file_name, catalog_name)
+    
+    catalog_name = "Asinex"
+    assert client._get_catalog_url(file_name, catalog_name, count="all") == "https://zinc.docking.org/catalogs/asin/substances.smi?count=all"
+    
+    catalog_name = "Apollo Scientific"
+    catalog_url = client._get_catalog_url(file_name, catalog_name, availability="for-sale") 
+    assert catalog_url == "https://zinc.docking.org/catalogs/apollo/substances/subsets/for-sale.smi?count=1000"
+    
+    catalog_name = "ChemBridge Economical"
+    catalog_url = client._get_catalog_url(file_name, catalog_name, availability="wait-ok", reactivity="clean") 
+    assert catalog_url == "https://zinc.docking.org/catalogs/chbre/substances/subsets/wait-ok+clean.smi?count=1000"
+    
 
 def test_urls_for_tranches_2d():
-    pass
+    
+    client = ZincClient()
+    col_list = ["A", "B", "C"]
+    row_list = ["A", "B", "C"]
+    
+    url_list = client._urls_for_tranches_2d(col_list, row_list)
+    assert len(url_list) == 72
+    # Test the first four
+    assert url_list[0] == "http://files.docking.org/2D/AA/AAAA.smi"
+    assert url_list[1] == "http://files.docking.org/2D/AA/AAAB.smi"
+    assert url_list[2] == "http://files.docking.org/2D/AA/AABA.smi"
+    assert url_list[3] == "http://files.docking.org/2D/AA/AABB.smi"
+    # Test the last four
+    assert url_list[-1] == "http://files.docking.org/2D/CC/CCEB.smi"
+    assert url_list[-2] == "http://files.docking.org/2D/CC/CCEA.smi"
+    assert url_list[-3] == "http://files.docking.org/2D/CC/CCCB.smi"
+    assert url_list[-4] == "http://files.docking.org/2D/CC/CCCA.smi"
+
+    col_list = ["A", "B", "C", "D"]
+    row_list = ["A", "B", "C", "D"]
+    
+    url_list = client._urls_for_tranches_2d(col_list, row_list)
+    assert len(url_list) == 128 # len(col_list) * len(row_list) * 8
+    
+    col_list = ["B", "C"]
+    row_list = ["A", "B", "C", "D"]
+    
+    url_list = client._urls_for_tranches_2d(col_list, row_list)
+    assert len(url_list) == 64 # len(col_list) * len(row_list) * 8
 
 def test_predifined_subset_2d_tranches():
-    pass
+    
+    client = ZincClient()
+    
+    # Test for errors
+    with pytest.raises(exc.InvalidSubsetError, match="is not a valid subset"):
+        client._predefined_subset_2d_tranches(subset="hello")
+    
+    # Test each subset
+    subset="Drug-Like"
+    col_list, row_list = client._predefined_subset_2d_tranches(subset)
+    assert col_list == ["B", "C", "D", "E", "F", "G", "H", "I", "J"]
+    assert row_list == ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
+    
+    subset="Lead-Like"
+    col_list, row_list = client._predefined_subset_2d_tranches(subset)
+    assert col_list == ["C", "D", "E"]
+    assert row_list == ["A", "B", "C", "D", "E", "F", "G"]
+    
+    subset="Lugs"
+    col_list, row_list = client._predefined_subset_2d_tranches(subset)
+    assert col_list == ["E", "F", "G", "H", "I"]
+    assert row_list == ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
+    
+    subset="Goldilocks"
+    col_list, row_list = client._predefined_subset_2d_tranches(subset)
+    assert col_list == ["C", "D", "E"]
+    assert row_list == ["D", "E", "F"]
+    
+    subset="Big-n-Greasy"
+    col_list, row_list = client._predefined_subset_2d_tranches(subset)
+    assert col_list == ["J", "K"]
+    assert row_list == ["I", "J", "K"]
+
+    subset="Fragments"
+    col_list, row_list = client._predefined_subset_2d_tranches(subset)
+    assert col_list == ["A", "B"]
+    assert row_list == ["A", "B", "C", "D", "E", "F", "G"]
+    
+    subset="Flagments"
+    col_list, row_list = client._predefined_subset_2d_tranches(subset)
+    assert col_list == ["B", "C", "D"]
+    assert row_list == ["A", "B", "C", "D", "E", "F", "G"]
+    
+    subset="Shards"
+    col_list, row_list = client._predefined_subset_2d_tranches(subset)
+    assert col_list == ["A"]
+    assert row_list == ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
 
 def test_molw_and_logp_2d_tranches():
-    pass
+    
+    client = ZincClient()
+    mw = (250, 200)
+    logp = (0, 2)
+    
+    #Test for errors first
+    with pytest.raises(exc.InvalidMolecularWeightRangeError, match="First number must be smaller"):
+        client._mw_and_logp_2d_tranches(mw, logp)
+    
+    mw = (100, 200)
+    with pytest.raises(exc.InvalidMolecularWeightRangeError, match="Molecular weight must be a value between"):
+        client._mw_and_logp_2d_tranches(mw, logp)
+        
+    mw = (300, 700)
+    with pytest.raises(exc.InvalidMolecularWeightRangeError, match="Molecular weight must be a value between"):
+        client._mw_and_logp_2d_tranches(mw, logp)
+    
+    mw = (250, 325)
+    logp = (3, 1)
+    with pytest.raises(exc.InvalidLogPRangeError, match="First number must be smaller"):
+        client._mw_and_logp_2d_tranches(mw, logp)
+        
+    logp = (-5, 2)
+    with pytest.raises(exc.InvalidLogPRangeError, match="LogP must be a value between"):
+        client._mw_and_logp_2d_tranches(mw, logp)
+
+    logp = (3, 10)
+    with pytest.raises(exc.InvalidLogPRangeError, match="LogP must be a value between"):
+        client._mw_and_logp_2d_tranches(mw, logp)
+
+    # Test that it returns the correct tranches
+    mw = (200, 550)
+    logp = (-1, 6)
+    col_list, row_list = client._mw_and_logp_2d_tranches(mw, logp)
+    assert col_list == ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
+    assert row_list == ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
+    
+    mw = (320, 500)
+    logp = (0.5, 3)
+    col_list, row_list = client._mw_and_logp_2d_tranches(mw, logp)
+    assert col_list == ["C", "D", "E", "F", "G", "H", "I", "J"]
+    assert row_list == ["B", "C", "D", "E", "F"]
+    
+    mw = (415.5, 525)
+    logp = (2.75, 4)
+    col_list, row_list = client._mw_and_logp_2d_tranches(mw, logp)
+    assert col_list == ["G", "H", "I", "J", "K"]
+    assert row_list == ["E", "F", "G", "H"]
+    
 
 def test_predifined_subset_3d_urls():
     pass
@@ -85,44 +226,3 @@ def test_discretize_values(value, lower):
     else:
         assert new_value == 550
         
-
-@pytest.mark.parametrize("subset,mol_weight,logp,format", [
-    ("Drug-Like", None, None, "smi"),
-    (None, (250, 350), (-1, 1), "smi"),
-    (None, (365, 415), (1.5, 2.25), "smi"),
-    ("Drug-Like", None, None, "sdf"),
-    (None, (200, 300), (-1, 2), "sdf"),
-])
-def test_download_ZINC2D_smiles(subset, mol_weight, logp, format):
-
-    url_list = get_zinc_urls( 
-        subset=subset,
-        mw_range=mol_weight, 
-        logp_range=logp,
-        file_format=format,
-        )
-    
-    if format == "smi":
-        base_url = "http://files.docking.org/2D/"
-        if subset == "Drug-like":
-            assert len(url_list) == 90 * 4 * 2 
-            assert url_list[0] == base_url + "BA/BAAA.smi"
-            assert url_list[-1] == base_url + "JJ/JJEB.smi"
-        elif mol_weight == (250, 350):
-            assert len(url_list) == 12 * 4 * 2
-            assert url_list[0] == base_url + "BA/BAAA.smi"
-            assert url_list[-1] == base_url + "EC/ECEB.smi"
-        elif mol_weight == (365, 415):
-            assert len(url_list) == 12 * 4 * 2
-            assert url_list[0] == base_url + "EC/ECAA.smi"
-            assert url_list[-1] == base_url + "HE/HEEB.smi"
-    else:
-        base_url = "http://files.docking.org/3D/"
-        if subset == "Drug-like":
-            assert len(url_list) == 19420
-            assert url_list[0] == base_url + "JJ/EDRP/JJEDRP.xaa.sdf.gz"
-            assert url_list[-1] == base_url + "AB/AAMM/ABAAMM.xaa.sdf.gz"
-        elif mol_weight == (200, 300):
-            assert len(url_list) == 3720
-            assert url_list[0] == base_url + "AA/AAML/AAAAML.xaa.sdf.gz"
-            assert url_list[-1] == base_url + "DC/EDRP/DCEDRP.xaa.sdf.gz"

@@ -73,7 +73,16 @@ class ZincClient():
         return json.loads(res.content)
     
     def _download_zinc_file(self, file_name, url):
-        """ Download a file from ZINC."""
+        """ Download a file from ZINC.
+        
+            Parameters
+            ----------
+            file_name : str
+                Name that will be given to the file.
+                
+            url : str
+                THe url from which the file will be downloaded.
+        """
         res = requests.get(url, allow_redirects=True)
         if res.status_code != requests.codes.ok:
             raise IOError(f"Could not download file")
@@ -82,6 +91,7 @@ class ZincClient():
             fh.write(res.content)
             
     def _download_batch_of_files(urls, download_path):
+        """ Download a set of files from ZINC."""
         pass
     
     def download_catalog(self, file_name, catalog_name, 
@@ -114,7 +124,7 @@ class ZincClient():
                 The reactivity of the molecules. 
             
         """
-        url = self._catalog_url(file_name, catalog_name, count, availability, bioactive, biogenic, reactivity)
+        url = self._get_catalog_url(file_name, catalog_name, count, availability, bioactive, biogenic, reactivity)
         self._download_zinc_file(file_name, url) 
        
         
@@ -214,6 +224,11 @@ class ZincClient():
             reactivity: str, default is None
                 The reactivity of the molecules. 
             
+            Returns
+            -------
+            url : str
+                The modified url with the fileformat, count and filters.
+            
         """
         if count != "all":
             if not isinstance(count, int):
@@ -242,10 +257,10 @@ class ZincClient():
         elif len(filters) == 1:
             url += "/subsets/" + filters[0]
         
-        url += f"{fileformat}?count={count}"
+        url += f".{fileformat}?count={count}"
         return url
     
-    def _catalog_url(self, file_name, catalog_name, count=1000, 
+    def _get_catalog_url(self, file_name, catalog_name, count=1000, 
                          availability=None, bioactive=None, 
                          biogenic=None, reactivity=None):
         """ Obtain the url for downloading a catalog."""
@@ -327,8 +342,8 @@ class ZincClient():
         subsets = {
             # First tuple is start and end columns, second tuple is start and end rows
             "Drug-Like"   : [(1, 9), (0, 9)],
-            "Lead-Like"   : [(2, 4), (0, 7)],
-            "Lugs"        : [(4, 8), (0, 7)],
+            "Lead-Like"   : [(2, 4), (0, 6)],
+            "Lugs"        : [(4, 8), (0, 8)],
             "Goldilocks"  : [(2, 4), (3, 5)],
             "Fragments"   : [(0, 1), (0, 6)],
             "Flagments"   : [(1, 3), (0, 6)],
@@ -383,9 +398,9 @@ class ZincClient():
         if mw_range[0] > mw_range[1]:
             raise InvalidMolecularWeightRangeError("First number must be smaller")
         if mw_range[0] < mw_values[0] or mw_range[0] > mw_values[-1]:
-            raise  InvalidMolecularWeightRangeError(f"Molecular weigth must be a value between {mw_values[0]} and {mw_values[-1]}")
+            raise  InvalidMolecularWeightRangeError(f"Molecular weight must be a value between {mw_values[0]} and {mw_values[-1]}")
         if mw_range[1] < mw_values[0] or mw_range[1] > mw_values[-1]:
-            raise  InvalidMolecularWeightRangeError(f"Molecular weigth must be a value between {mw_values[0]} and {mw_values[-1]}")
+            raise  InvalidMolecularWeightRangeError(f"Molecular weight must be a value between {mw_values[0]} and {mw_values[-1]}")
         
         # Validate logP
         if logp_range[0] > logp_range[1]:
@@ -424,7 +439,7 @@ class ZincClient():
         return col_list, row_list
     
     ### Methods to obtain data necessary for the class to work (i.e catalog names, filter names)
-    def _get_filters():
+    def _get_filters(self):
         """Get all the filters available in ZINC.
         
            Returns
@@ -527,7 +542,7 @@ class ZincClient():
             
             InvalidReactivityError
         """
-        if fileformat not in self.file_formats():
+        if fileformat not in self.file_formats:
             raise InvalidFileFormatError(f"{fileformat} is not a valid fileformat.")
         
         if availability:
