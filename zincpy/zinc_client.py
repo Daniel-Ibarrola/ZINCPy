@@ -1,22 +1,27 @@
 from zincpy._private_tools.exceptions import (InvalidLogPRangeError, InvalidZincIdError, InvalidCatalogError, InvalidFileFormatError,
                         InvalidBioactiveError, InvalidBiogenicError, InvalidReactivityError,
                         InvalidAvailabilityError, CountTypeError, NegativeCountError,
-                        InvalidSubsetError, ZincPyValueError, InvalidMolecularWeightRangeError)
+                        InvalidSubsetError, ZincPyValueError, InvalidMolecularWeightRangeError, DownloadError,
+                        ZincNotFoundError, ZincTimeoutError)
 # Third Party
 import requests
+from tqdm.auto import tqdm
 # Standard Library
+import itertools
 import json
+import os
+import pkg_resources
 import re
 import string
 
 class ZincClient():
+    """Class to interact with ZINC database."""
     
     def __init__(self):
         self._base_url = "https://zinc.docking.org/"
         self._substances_url = self._base_url + "substances"
         self._catalog_url = self._base_url + "catalogs"
         self._tranches_2d_url = "http://files.docking.org/2D/"
-        self._tranch_url = self._substances_url + "/?tranche_name="
 
         self.catalogs = self._load_catalogs_from_file()            
         self.file_formats = ["xml" ,"csv","js",
@@ -43,16 +48,16 @@ class ZincClient():
                 The smiles of the compound
         """
         if not isinstance(zinc_id, str):
-            raise InvalidZincIdError
+            raise InvalidZincIdError(f"Invalid type {type(zinc_id)} Expected str.")
         
         pattern = r"ZINC[0-9]+"
         if re.match(pattern, zinc_id) is None:
-            raise InvalidZincIdError
+            raise InvalidZincIdError(f"{zinc_id} is not a valid ZINC id")
         
         url = self._substances_url + "/" + zinc_id + ".json"
         res = requests.get(url, allow_redirects=True)
         if res.status_code != requests.codes.ok:
-            raise IOError(f"Could not get smiles for {zinc_id}")
+            raise DownloadError(f"Could not get smiles for {zinc_id}. Status code: {res.status_code}")
         
         info = json.loads(res.content)
         return info["smiles"]
@@ -68,7 +73,7 @@ class ZincClient():
         url = self._catalog_url + ".json?count=all"
         res = requests.get(url, allow_redirects=True)
         if res.status_code != requests.codes.ok:
-            raise IOError(f"Could not fetch catalogs")
+            raise DownloadError(f"Could not download catalogs. Status code: {res.status_code}")
         
         return json.loads(res.content)
     
@@ -85,14 +90,52 @@ class ZincClient():
         """
         res = requests.get(url, allow_redirects=True)
         if res.status_code != requests.codes.ok:
-            raise IOError(f"Could not download file")
+            if res.status_code == 404:
+                raise ZincNotFoundError(f"Couldn't download file from {url}. Status code 404")
+            elif res.status_code == 408:
+                raise ZincTimeoutError(f"ZINC is taking to long to respond.")
+            raise DownloadError(f"Could not download file from {url}\nStatus Code: {res.status_code}")
         
         with open(file_name, "wb") as fh:
             fh.write(res.content)
             
-    def _download_batch_of_files(urls, download_path):
-        """ Download a set of files from ZINC."""
-        pass
+    def _download_batch_of_files(self, urls, download_path, fileformat, tree=True, ignore_failures=True):
+        """ Download a set of files from ZINC.
+
+            download_path : str
+                The path where the files will be stored
+                
+            tree : bool
+                Whether to use a tree directory structure or to download all the 
+                files to a single folder.
+                
+            ignore_failures : bool
+                Whether to raise an exception if a file could not be downloaded. 
+        """
+        for url in tqdm(urls):
+            if not fileformat:
+                # The last part of the url contains the file name and extension
+                file_name = url[-8:]
+            else:
+                # The last part of the url contains the tranche name that will be used to name the file
+                file_name = url[-4:] + "." + fileformat
+            if tree:
+                # Create a folder for each tranch
+                tranch = url[-11:-9]
+                subdir = os.path.join(download_path, tranch)
+                if not os.path.isdir(subdir):
+                    os.mkdir(subdir)
+                file_path = os.path.join(subdir, file_name)
+            else: 
+                file_path = os.path.join(download_path, file_name)
+            
+            if ignore_failures:
+                try:
+                    self._download_zinc_file(file_path, url)
+                except (ZincTimeoutError, ZincNotFoundError):
+                    continue
+            else:
+                self._download_zinc_file(file_path, url)
     
     def download_catalog(self, file_name, catalog_name, 
                          count=1000, availability=None, bioactive=None, 
@@ -160,24 +203,49 @@ class ZincClient():
                                                   biogenic, reactivity)
         self._download_zinc_file(file_name, url)
         
-    def download_predifined_subset_2d(self, download_path, subset):
+    def download_predifined_subset(self, download_path, subset, fileformat, tree=True, ignore_failures=True):
         """ Download one of ZINC's predifined subsets.
+        
+            Predifined substs can only be downloaded in the following formats: smi, txt, sdf, mol2 and db2.
         
             Parameters
             ----------
             download_path : str
                 The path were files will be downloaded.
-                
+            
             subset : str
                 Name of the subset
+            
+            fileformat : str
+                The format of the files that will be downloaded. Use mol2 or sdf for 3D molecules, otherwise
+                use any of the other formats for 2D molecules (smiles).
+            
+            tree : bool
+                Whether to use a tree directory structure or to download all the 
+                files to a single folder.
+                
+            ignore_failures : bool
+                Whether to raise an exception if a file could not be downloaded. 
         """
-        col_list, row_list = self._predefined_subset_2d_tranches(subset)
-        url_list = self._urls_for_tranches_2d(col_list, row_list)
+        col_list, row_list = self._predefined_subset_tranches(subset)
         
-        self._download_batch_of_files(url_list, download_path)
-
-    def download_custom_subset_2d(self, download_path, mw_range, logp_range):
+        formats_2d = ["smi", "txt"]
+        formats_3d = ["sdf", "mol2", "db2"] 
+        
+        if fileformat in formats_2d:
+            url_list = self._urls_for_tranches_2d(col_list, row_list, fileformat)
+        elif fileformat in formats_3d:
+            url_list = self._urls_for_tranches_3d(col_list, row_list, fileformat)
+        else:
+            raise InvalidFileFormatError(f"{fileformat} is not a valid fileformat")
+        
+        self._download_batch_of_files(url_list, download_path, tree, ignore_failures)
+    
+    def download_custom_subset(self, download_path, fileformat, mw_range, logp_range, tree=True, ignore_failures=True,
+                                  availability=None, bioactive=None, biogenic=None, reactivity=None):
         """ Download subset with a custom molecular weight range and logP range from ZINC.
+        
+            This method accepts all file formats as specified in the attribute fileformats.
         
             Parameters
             ----------
@@ -185,15 +253,53 @@ class ZincClient():
                 The path were files will be downloaded.
                 
             mw_range : 2-tuple of float
-            Range of molecular weight in daltons for the downloaded molecules.
+                Range of molecular weight in daltons for the downloaded molecules.
         
             logp_range : 2-tuple of float
                 Range of logP for the downloaded molecules.
+            
+            tree : bool
+                Whether to use a tree directory structure or to download all the 
+                files to a single folder.
+                
+            ignore_failures : bool
+                Whether to raise an exception if a file could not be downloaded. 
+                
+            availability : str, default is None
+                The availability of the molecules.
+            
+            bioactive : str, default is None
+                Subset of bioactivity and drugs.
+                
+            biogenic : str, default is None
+                Subset of biogenic.
+                
+            reactivity: str, default is None
+                The reactivity of the molecules.      
         """
-        col_list, row_list = self._mw_and_logp_2d_tranches(mw_range, logp_range)
-        url_list = self._urls_for_tranches_2d(col_list, row_list)
         
-        self._download_batch_of_files(url_list, download_path)
+        formats_2d = ["xml" ,"csv","js","json","db","solv"]
+        formats_3d = ["sdf", "mol2", "db2"] 
+        
+        col_list, row_list = self._mw_and_logp_tranches(mw_range, logp_range)
+        
+        if any([availability, bioactive, biogenic, reactivity]):
+            url_list = self._tranche_with_filters_url_list(col_list, row_list, availability, 
+                                                        bioactive, biogenic, reactivity, 
+                                                        fileformat=fileformat)
+        else:
+            if fileformat == "smi" or fileformat == "txt":
+                url_list = self._urls_for_tranches_2d(col_list, row_list, fileformat)
+            elif fileformat in formats_2d:
+                url_list = self._tranche_with_filters_url_list(col_list, row_list, availability, 
+                                                        bioactive, biogenic, reactivity, 
+                                                        fileformat=fileformat)
+            elif fileformat in formats_3d:
+                url_list = self.urls_for_tranches_3d(col_list, row_list, fileformat)
+            else:
+                raise InvalidFileFormatError(f"{fileformat} is not a valid file format.")
+        
+        self._download_batch_of_files(url_list, fileformat, download_path, tree, ignore_failures) 
     
     ### Methods for generating urls ###
     def _append_filters_to_url(self, url, fileformat, count=1000, availability=None, 
@@ -278,8 +384,8 @@ class ZincClient():
         
         return url
     
-    def _urls_for_tranches_2d(self, col_list, row_list):
-        """ Returns a list of urls to download files in smi format from the specified tranches.
+    def _urls_for_tranches_2d(self, col_list, row_list, fileformat="smi"):
+        """ Returns a list of urls to download files in smi format for the specified tranches.
         
             Parameters
             ----------
@@ -298,29 +404,101 @@ class ZincClient():
             
         """
         url_list = []
-        # Each tranch is divided into various files from A to E
-        tranch_subcategories = ["A", "B", "C", "E"]
+        if fileformat != "smi" and fileformat != "txt":
+            raise InvalidFileFormatError(f"{fileformat} is not a valid file format. Valid formats are smi or txt")
         
+        for col in col_list:
+            for row in row_list:           
+                tranch = col + row
+                # Each tranch is divided into various files from A to E
+                tranch_subcategories = itertools.product("ABCE", "ABCD", repeat=1)
+                url = self._tranches_2d_url + tranch + "/" + tranch      
+                for subtranch in tranch_subcategories:
+                    url_download = url + subtranch[0] + subtranch[1] + "." + fileformat
+                    url_list.append(url_download)
+
+        return url_list
+    
+    def _urls_for_tranches_3d(self, col_list, row_list, fileformat):
+        """ Get a list of urls to download files in a 3D format for the specified tranches.
+        
+            Parameters
+            ----------
+            col_list : list of str
+                List with the columns names. Columns are named with letters from A
+                to K. They correspond to molecular weight.
+                
+            row_list : list of str
+                List with the row names. Rows are named with letters from A to K.
+                They correspond to LogP.
+        
+            fileformat : {"sdf", "mol2", "db2"}
+                The format of the files.
+                
+            Returns
+            -------
+            url_list : list of str
+                The urls. 
+        
+        """
+        formats_3d = ["sdf", "mol2", "db2"] 
+        if fileformat not in formats_3d:
+            raise InvalidFileFormatError(f"{fileformat} is not a valid 3D file format. Valid formats are: {formats_3d}")
+        
+        tranches = []
+        for column in col_list:
+            for row in row_list:
+                tranches.append(column + row)
+                
+        base_url = "http://files.docking.org/3D/"
+        
+        urls3d_dir = "./data/urls3d/"
+        url_list = []
+        for tranch in tranches:
+            file = pkg_resources.resource_filename("zincpy", urls3d_dir + tranch + ".uri")
+            with open(file, "r") as fh:
+                for line in fh.readlines():
+                    url = base_url + tranch + "/" + line.rstrip() + "." + fileformat + ".gz"
+                    url_list.append(url)
+        
+        return url_list
+    
+    def _tranch_url_with_filters(self, tranch, availability, bioactive, biogenic, reactivity, fileformat="smi"):
+        """ Generate a url for a tranch with filters.
+        """
+        
+        url = self._append_filters_to_url(self._substances_url, fileformat=fileformat,
+                                            count="all", availability=availability,
+                                            bioactive=bioactive, biogenic=biogenic,
+                                            reactivity=reactivity)
+        url += f"&tranche_name={tranch}"        
+      
+        return url
+    
+    def _tranche_with_filters_url_list(self, col_list, row_list, availability, bioactive, biogenic, reactivity, fileformat):
+        """ Generate a list of urls for a set of tranches with filters.
+        """
         # Get urls for smi files
+        url_list = []
         for col in col_list:
             for row in row_list:
-                tranch = col + row
-                url = self._tranches_2d_url + tranch + "/" + tranch      
-                for ff in tranch_subcategories:
-                    for jj in tranch_subcategories[0:2]:
-                        url_download = url + ff + jj + ".smi"
-                        url_list.append(url_download)
+                tranch = col + row     
+                tranch_subcategories = itertools.product("ABCE", "ABCD", repeat=1)
+                for subtranch in tranch_subcategories:
+                    url = self._tranch_url_with_filters(tranch + subtranch[0] + subtranch[1], 
+                                                        availability, 
+                                                        bioactive, 
+                                                        biogenic, 
+                                                        reactivity,
+                                                        fileformat)
+                    url_list.append(url)
                         
         return url_list
     
-    def _tranch_url(self, tranch):
-        
-        return self._tranch_url + {tranch}
-    
     ### Methods for generating trances ###
 
-    def _predefined_subset_2d_tranches(self, subset):
-        """ Obtain the tranches for one of ZINC's predifined subsets in 2D (smiles).
+    def _predefined_subset_tranches(self, subset):
+        """ Obtain the tranches for one of ZINC's predifined subsets.
 
             Parameters
             ----------
@@ -367,9 +545,9 @@ class ZincClient():
 
         return col_list, row_list
                         
-    def _mw_and_logp_2d_tranches(self, mw_range, logp_range):
+    def _mw_and_logp_tranches(self, mw_range, logp_range):
         """ Obtain the tranches for a custom subset with the specified molecular weight and logP
-            range in 2D (smiles).
+            range.
 
             Parameters
             ----------
@@ -469,7 +647,8 @@ class ZincClient():
     
     def _load_catalogs_from_file(self):
         """ Load the catalogs from a file in case they can't be downloaded"""
-        with open("./zincpy/data/catalogs.json", "r") as fh:
+        catalogs_file = pkg_resources.resource_filename("zincpy", "./data/catalogs.json")
+        with open(catalogs_file, "r") as fh:
             catalogs = json.load(fh)
         return catalogs
         
@@ -497,7 +676,7 @@ class ZincClient():
         Returns
         -------
         value : double
-            The discretized value
+            The discretized value.
 
         """
         for ii in range(len(bins) - 1):

@@ -43,3 +43,17 @@ class ZincPyTypeError(TypeError):
 
 class CountTypeError(ZincPyTypeError):
     pass
+
+# IO Errors
+
+class ZincPyIOError(IOError):
+    pass
+
+class DownloadError(ZincPyIOError):
+    pass
+
+class ZincNotFoundError(ZincPyIOError):
+    pass
+
+class ZincTimeoutError(ZincPyIOError):
+    pass
