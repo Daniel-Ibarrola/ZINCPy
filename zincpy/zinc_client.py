@@ -1,8 +1,8 @@
 from zincpy._private_tools.exceptions import (InvalidLogPRangeError, InvalidZincIdError, InvalidCatalogError, InvalidFileFormatError,
                         InvalidBioactiveError, InvalidBiogenicError, InvalidReactivityError,
                         InvalidAvailabilityError, CountTypeError, NegativeCountError,
-                        InvalidSubsetError, ZincPyValueError, InvalidMolecularWeightRangeError, DownloadError,
-                        ZincNotFoundError, ZincTimeoutError)
+                        InvalidSubsetError, ZincPyTypeError, ZincPyValueError, InvalidMolecularWeightRangeError, DownloadError,
+                        ZincNotFoundError, ZincTimeoutError, InvaludUrlTypeError)
 # Third Party
 import requests
 from tqdm.auto import tqdm
@@ -99,12 +99,21 @@ class ZincClient():
         with open(file_name, "wb") as fh:
             fh.write(res.content)
             
-    def _download_batch_of_files(self, urls, download_path, fileformat, tree=True, ignore_failures=True):
+    def _download_batch_of_files(self, urls, download_path, fileformat, url_type, tree=True, ignore_failures=True):
         """ Download a set of files from ZINC.
 
+            urls : list of str
+                List with urls
+                
             download_path : str
                 The path where the files will be stored
                 
+            fileformat : str
+                The format of the files
+            
+            url_type : {"2D", "3D", "CS"}
+                The type of the url. Needed to extract the file name.
+            
             tree : bool
                 Whether to use a tree directory structure or to download all the 
                 files to a single folder.
@@ -112,16 +121,39 @@ class ZincClient():
             ignore_failures : bool
                 Whether to raise an exception if a file could not be downloaded. 
         """
+        # Check input arguments
+        if not isinstance(download_path, str):
+            raise ZincPyTypeError(f"Incorrect type for download_path: {type(download_path)}. Expected str")
+        if not isinstance(fileformat, str):
+            raise ZincPyTypeError(f"Incorrect type for fileformat: {type(fileformat)}. Expected str")
+        if not isinstance(url_type, str):
+            raise ZincPyTypeError(f"Incorrect type for url_type: {type(url_type)}. Expected str")
+        if not isinstance(tree, bool):
+            raise ZincPyTypeError(f"Incorrect type for tree: {type(tree)}. Expected bool")
+        if not isinstance(ignore_failures, bool):
+            raise ZincPyTypeError(f"Incorrect type for ignore_failures: {type(ignore_failures)}. Expected bool")
+        
+        
+        file_name_extractors = {
+            # For urls of this kind http://files.docking.org/2D/BA/BAAA.smi
+            "2D": lambda url, fformat : url[-8:],
+            # For urls of this type http://files.docking.org/3D/AA/AAML/AAAAML.xaa.db2.gz
+            "3D": lambda url, fformat : url.split("/")[-1],
+            # Urls of this kind https://zinc.docking.org/substances/subsets/for-sale.mol2?count=all&tranche_name=AAAA
+            "CS": lambda url, fformat : url[-4:] + "." + fformat
+        }
+        
+        try:
+            file_name_extractor = file_name_extractors[url_type]
+        except KeyError:
+            raise InvaludUrlTypeError(f"{url_type} is not a valid url type.")
+        
         for url in tqdm(urls):
-            if not fileformat:
-                # The last part of the url contains the file name and extension
-                file_name = url[-8:]
-            else:
-                # The last part of the url contains the tranche name that will be used to name the file
-                file_name = url[-4:] + "." + fileformat
+            
+            file_name = file_name_extractor(url, fileformat)
             if tree:
                 # Create a folder for each tranch
-                tranch = url[-11:-9]
+                tranch = file_name[0:2]
                 subdir = os.path.join(download_path, tranch)
                 if not os.path.isdir(subdir):
                     os.mkdir(subdir)
@@ -234,13 +266,13 @@ class ZincClient():
         
         if fileformat in formats_2d:
             url_list = self._urls_for_tranches_2d(col_list, row_list, fileformat)
+            self._download_batch_of_files(url_list, download_path, fileformat, "2D",  tree, ignore_failures)
         elif fileformat in formats_3d:
             url_list = self._urls_for_tranches_3d(col_list, row_list, fileformat)
+            self._download_batch_of_files(url_list, download_path, fileformat, "3D",  tree, ignore_failures)
         else:
             raise InvalidFileFormatError(f"{fileformat} is not a valid fileformat")
         
-        self._download_batch_of_files(url_list, download_path, tree, ignore_failures)
-    
     def download_custom_subset(self, download_path, fileformat, mw_range, logp_range, tree=True, ignore_failures=True,
                                   availability=None, bioactive=None, biogenic=None, reactivity=None):
         """ Download subset with a custom molecular weight range and logP range from ZINC.
@@ -287,20 +319,22 @@ class ZincClient():
             url_list = self._tranche_with_filters_url_list(col_list, row_list, availability, 
                                                         bioactive, biogenic, reactivity, 
                                                         fileformat=fileformat)
+            self._download_batch_of_files(url_list, download_path, fileformat, "CS", tree, ignore_failures) 
         else:
             if fileformat == "smi" or fileformat == "txt":
                 url_list = self._urls_for_tranches_2d(col_list, row_list, fileformat)
+                self._download_batch_of_files(url_list, download_path, fileformat, "2D", tree, ignore_failures)    
             elif fileformat in formats_2d:
                 url_list = self._tranche_with_filters_url_list(col_list, row_list, availability, 
                                                         bioactive, biogenic, reactivity, 
                                                         fileformat=fileformat)
+                self._download_batch_of_files(url_list, download_path, fileformat, "CS", tree, ignore_failures)
             elif fileformat in formats_3d:
-                url_list = self.urls_for_tranches_3d(col_list, row_list, fileformat)
+                url_list = self._urls_for_tranches_3d(col_list, row_list, fileformat)
+                self._download_batch_of_files(url_list, download_path, fileformat, "3D", tree, ignore_failures)
             else:
                 raise InvalidFileFormatError(f"{fileformat} is not a valid file format.")
         
-        self._download_batch_of_files(url_list, fileformat, download_path, tree, ignore_failures) 
-    
     ### Methods for generating urls ###
     def _append_filters_to_url(self, url, fileformat, count=1000, availability=None, 
                          bioactive=None, biogenic=None, reactivity=None):
@@ -495,7 +529,7 @@ class ZincClient():
                         
         return url_list
     
-    ### Methods for generating trances ###
+    ### Methods for generating tranches ###
 
     def _predefined_subset_tranches(self, subset):
         """ Obtain the tranches for one of ZINC's predifined subsets.

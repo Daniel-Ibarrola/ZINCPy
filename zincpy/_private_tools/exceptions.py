@@ -36,6 +36,9 @@ class InvalidMolecularWeightRangeError(ZincPyValueError):
 class InvalidLogPRangeError(ZincPyValueError):
     pass
 
+class InvaludUrlTypeError(ZincPyValueError):
+    pass
+
 # Exceptions derived from type errors
 
 class ZincPyTypeError(TypeError):
